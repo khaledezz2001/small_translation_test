@@ -11,17 +11,24 @@ RUN pip uninstall -y torchvision torchaudio || true
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-# HuggingFace token (required — translategemma is a gated model)
-# ⚠️ You MUST accept the license at https://huggingface.co/google/translategemma-4b-it first!
 # Download google/translategemma-4b-it
-RUN python3 -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download( \
-    repo_id='google/translategemma-4b-it', \
-    local_dir='/models/hf/translategemma', \
-    local_dir_use_symlinks=False, \
-    token='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' \
-)"
+COPY <<'DOWNLOAD_SCRIPT' /tmp/download_model.py
+import sys
+try:
+    from huggingface_hub import snapshot_download
+    print("Starting download of google/translategemma-4b-it...", flush=True)
+    snapshot_download(
+        repo_id="google/translategemma-4b-it",
+        local_dir="/models/hf/translategemma",
+        local_dir_use_symlinks=False,
+        token="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"
+    )
+    print("Download complete!", flush=True)
+except Exception as e:
+    print(f"DOWNLOAD FAILED: {type(e).__name__}: {e}", flush=True)
+    sys.exit(1)
+DOWNLOAD_SCRIPT
+RUN python3 /tmp/download_model.py
 
 ENV HF_HOME=/models/hf
 ENV TRANSFORMERS_CACHE=/models/hf
