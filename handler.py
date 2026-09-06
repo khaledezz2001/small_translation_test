@@ -1,441 +1,253 @@
 import time
 import re
+import torch
 import runpod
-from vllm import LLM, SamplingParams
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-MODEL_PATH = "/models/hf/translategemma"
-llm_engine = None
+MODEL_PATH = "/models/hf/nllb"
+model = None
 tokenizer = None
 
 # =====================================================
-# Language name → ISO 639-1 code mapping
+# Language name / ISO 639-1 → FLORES-200 code mapping
+# NLLB uses FLORES-200 codes: 3-letter ISO 639-3 + 4-letter script
 # =====================================================
 LANG_CODE_MAP = {
     # English
-    "english": "en",
+    "english": "eng_Latn", "en": "eng_Latn",
     # Spanish
-    "spanish": "es", "español": "es", "espanol": "es",
+    "spanish": "spa_Latn", "es": "spa_Latn",
+    "español": "spa_Latn", "espanol": "spa_Latn",
     # French
-    "french": "fr", "français": "fr", "francais": "fr",
+    "french": "fra_Latn", "fr": "fra_Latn",
+    "français": "fra_Latn", "francais": "fra_Latn",
     # German
-    "german": "de", "deutsch": "de",
-    # Arabic
-    "arabic": "ar", "العربية": "ar", "عربي": "ar",
+    "german": "deu_Latn", "de": "deu_Latn", "deutsch": "deu_Latn",
+    # Arabic (Modern Standard)
+    "arabic": "arb_Arab", "ar": "arb_Arab",
+    "العربية": "arb_Arab", "عربي": "arb_Arab",
     # Russian
-    "russian": "ru", "русский": "ru",
-    # Chinese
-    "chinese": "zh", "中文": "zh",
+    "russian": "rus_Cyrl", "ru": "rus_Cyrl", "русский": "rus_Cyrl",
+    # Chinese (Simplified)
+    "chinese": "zho_Hans", "zh": "zho_Hans", "中文": "zho_Hans",
     # Portuguese
-    "portuguese": "pt", "português": "pt",
+    "portuguese": "por_Latn", "pt": "por_Latn", "português": "por_Latn",
     # Italian
-    "italian": "it", "italiano": "it",
+    "italian": "ita_Latn", "it": "ita_Latn", "italiano": "ita_Latn",
     # Turkish
-    "turkish": "tr", "türkçe": "tr",
+    "turkish": "tur_Latn", "tr": "tur_Latn", "türkçe": "tur_Latn",
     # Japanese
-    "japanese": "ja", "日本語": "ja",
+    "japanese": "jpn_Jpan", "ja": "jpn_Jpan", "日本語": "jpn_Jpan",
     # Korean
-    "korean": "ko", "한국어": "ko",
+    "korean": "kor_Hang", "ko": "kor_Hang", "한국어": "kor_Hang",
     # Dutch
-    "dutch": "nl", "nederlands": "nl",
+    "dutch": "nld_Latn", "nl": "nld_Latn", "nederlands": "nld_Latn",
     # Polish
-    "polish": "pl", "polski": "pl",
+    "polish": "pol_Latn", "pl": "pol_Latn", "polski": "pol_Latn",
     # Hindi
-    "hindi": "hi", "हिन्दी": "hi",
+    "hindi": "hin_Deva", "hi": "hin_Deva", "हिन्दी": "hin_Deva",
     # Greek
-    "greek": "el", "ελληνικά": "el",
+    "greek": "ell_Grek", "el": "ell_Grek", "ελληνικά": "ell_Grek",
     # Czech
-    "czech": "cs", "čeština": "cs",
+    "czech": "ces_Latn", "cs": "ces_Latn", "čeština": "ces_Latn",
     # Romanian
-    "romanian": "ro", "română": "ro",
+    "romanian": "ron_Latn", "ro": "ron_Latn", "română": "ron_Latn",
     # Hungarian
-    "hungarian": "hu", "magyar": "hu",
+    "hungarian": "hun_Latn", "hu": "hun_Latn", "magyar": "hun_Latn",
     # Swedish
-    "swedish": "sv", "svenska": "sv",
+    "swedish": "swe_Latn", "sv": "swe_Latn", "svenska": "swe_Latn",
     # Bulgarian
-    "bulgarian": "bg", "български": "bg",
+    "bulgarian": "bul_Cyrl", "bg": "bul_Cyrl", "български": "bul_Cyrl",
     # Ukrainian
-    "ukrainian": "uk", "українська": "uk",
+    "ukrainian": "ukr_Cyrl", "uk": "ukr_Cyrl", "українська": "ukr_Cyrl",
     # Hebrew
-    "hebrew": "he", "עברית": "he",
+    "hebrew": "heb_Hebr", "he": "heb_Hebr", "עברית": "heb_Hebr",
     # Thai
-    "thai": "th", "ไทย": "th",
+    "thai": "tha_Thai", "th": "tha_Thai", "ไทย": "tha_Thai",
     # Vietnamese
-    "vietnamese": "vi", "tiếng việt": "vi",
+    "vietnamese": "vie_Latn", "vi": "vie_Latn", "tiếng việt": "vie_Latn",
     # Indonesian
-    "indonesian": "id", "bahasa indonesia": "id",
+    "indonesian": "ind_Latn", "id": "ind_Latn", "bahasa indonesia": "ind_Latn",
     # Malay
-    "malay": "ms", "bahasa melayu": "ms",
+    "malay": "zsm_Latn", "ms": "zsm_Latn", "bahasa melayu": "zsm_Latn",
     # Persian / Farsi
-    "persian": "fa", "farsi": "fa", "فارسی": "fa",
+    "persian": "pes_Arab", "farsi": "pes_Arab", "fa": "pes_Arab",
+    "فارسی": "pes_Arab",
 }
 
 def get_lang_code(language_name: str) -> str:
-    """Convert a language name to its ISO 639-1 code."""
+    """Convert a language name or ISO 639-1 code to its FLORES-200 code."""
     normalized = language_name.strip().lower()
-    # If it's already a 2-letter code, return it
-    if len(normalized) == 2 and normalized.isascii():
-        return normalized
-    # If it's a known language name, map it
     if normalized in LANG_CODE_MAP:
         return LANG_CODE_MAP[normalized]
-    # Fallback: return as-is (TranslateGemma may still recognize it)
+    # If already a FLORES-200 code (e.g., "eng_Latn"), return as-is
+    if re.match(r"^[a-z]{3}_[A-Z][a-z]{3}$", language_name.strip()):
+        return language_name.strip()
     log(f"WARNING: Unknown language '{language_name}', passing as-is")
     return normalized
 
 
 # =====================================================
-# Summary prompt (kept for summarization)
+# Load model with HuggingFace Transformers
 # =====================================================
-DEFAULT_SUMMARY_PROMPT = (
-    "You are a professional legal assistant.\n"
-    "Produce a single-paragraph summary of the ENTIRE document in clear English.\n"
-    "STRICT RULES:\n"
-    "- Output MUST be one paragraph only\n"
-    "- Do NOT use headings, titles, bullet points, or lists\n"
-    "- Do NOT classify the document type unless explicitly stated in the text\n"
-    "- Do NOT invent or infer information\n"
-    "- Mention only facts that are explicitly present in the document\n"
-    "- Cover all major sections evenly if the document is long\n"
-    "- Focus on parties, purpose, key obligations, payments, terms, penalties, and dispute resolution if present\n"
-    "- Ignore layout, tables, formatting, and section numbering\n"
-    "- Write in neutral legal English\n\n"
-)
+BATCH_SIZE = 16       # Sentences per batch for GPU inference
+MAX_LENGTH = 512      # Max tokens per segment (NLLB distilled context)
 
-
-# =====================================================
-# Load model with vLLM — auto-detects GPU
-# =====================================================
 def load_model():
-    global llm_engine, tokenizer
-    if llm_engine is not None:
+    global model, tokenizer
+    if model is not None:
         return
 
-    # IMPORTANT: Do NOT call torch.cuda.* before vLLM init!
-    # It initializes CUDA which forces 'spawn' multiprocessing and crashes.
-    log("Loading TranslateGemma-4b-it with vLLM engine...")
+    log("Loading NLLB-200-distilled-1.3B...")
     t0 = time.time()
 
-    llm_engine = LLM(
-        model=MODEL_PATH,
-        dtype="auto",                    # auto-selects BF16 on Ampere+
-        gpu_memory_utilization=0.90,
-        max_model_len=8192,
-        trust_remote_code=True,
-        enable_prefix_caching=True,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
-    tokenizer = llm_engine.get_tokenizer()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    ).to(device)
+    model.eval()
 
-    # Log GPU info AFTER vLLM has initialized CUDA
-    import torch
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         log(f"GPU: {gpu_name} ({vram_gb:.1f} GB)")
 
-    log(f"vLLM engine ready in {time.time()-t0:.1f}s")
+    log(f"NLLB model ready in {time.time()-t0:.1f}s on {device}")
 
 
 # =====================================================
-# Helper: build prompt from messages
+# Text chunking — split long text into translatable segments
 # =====================================================
-def build_prompt(messages):
-    """Build prompt using tokenizer's chat template."""
-    try:
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False,
-            add_generation_prompt=True,
-        )
-    except Exception as e:
-        log(f"WARNING: Chat template failed ({e}), using fallback format")
-        # Fallback for TranslateGemma: simple turn-based format
-        parts = []
-        for m in messages:
-            role = m["role"]
-            content = m["content"]
-            if isinstance(content, list):
-                # Structured content for translation
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text_part = item.get("text", "")
-                        src = item.get("source_lang_code", "")
-                        tgt = item.get("target_lang_code", "")
-                        parts.append(f"<start_of_turn>{role}\n"
-                                     f"Translate from {src} to {tgt}:\n{text_part}"
-                                     f"<end_of_turn>")
-            else:
-                parts.append(f"<start_of_turn>{role}\n{content}<end_of_turn>")
-        parts.append("<start_of_turn>model\n")
-        return "\n".join(parts)
+def _split_into_segments(text: str, max_chars: int = 1000) -> list:
+    """Split text into paragraph-based segments that fit within token limits.
 
+    NLLB works best with shorter texts. We split by paragraphs first,
+    then by sentences if a paragraph is still too long.
+    """
+    paragraphs = re.split(r"\n\s*\n", text)
+    segments = []
 
-# =====================================================
-# Helper: build translation messages for TranslateGemma
-# =====================================================
-def build_translation_messages(text: str, target_lang_code: str) -> list:
-    """Build TranslateGemma-style structured messages for translation."""
-    return [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "source_lang_code": "auto",
-                    "target_lang_code": target_lang_code,
-                    "text": text
-                }
-            ]
-        }
-    ]
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        if len(para) <= max_chars:
+            segments.append(para)
+        else:
+            # Split long paragraphs by sentences
+            sentences = re.split(r"(?<=[.!?])\s+", para)
+            current = ""
+            for sent in sentences:
+                if current and len(current) + len(sent) + 1 > max_chars:
+                    segments.append(current.strip())
+                    current = sent
+                else:
+                    current = f"{current} {sent}".strip() if current else sent
+            if current.strip():
+                segments.append(current.strip())
+
+    return segments if segments else [text]
 
 
 # =====================================================
-# Text helpers
+# TRANSLATION — NLLB-200 batch translation
 # =====================================================
-
-def limit_words(text: str, max_words: int) -> str:
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-    truncated = " ".join(words[:max_words])
-    if truncated.rstrip().endswith("."):
-        return truncated.rstrip()
-    last_period = max(truncated.rfind(". "), truncated.rfind(".\n"))
-    last_excl = truncated.rfind("! ")
-    last_quest = truncated.rfind("? ")
-    best = max(last_period, last_excl, last_quest)
-    if best > len(truncated) * 0.6:
-        return truncated[:best + 1].strip()
-    return truncated.rstrip()
-
-def clean_output(decoded: str) -> str:
-    decoded = re.sub(r"<think>.*?</think>", "", decoded, flags=re.DOTALL).strip()
-    decoded = re.sub(r"<\|.*?\|>", "", decoded).strip()
-    # Clean up any turn markers that might leak through
-    decoded = re.sub(r"<start_of_turn>.*?<end_of_turn>", "", decoded, flags=re.DOTALL).strip()
-    decoded = re.sub(r"<end_of_turn>", "", decoded).strip()
-    return decoded
-
-
-# =====================================================
-# Token limits and helpers for context-aware chunking
-# =====================================================
-MAX_PROMPT_TOKENS = 6000  # Conservative limit for 4B model with 8192 context
-
-def _estimate_tokens(text):
-    """Rough token estimate: ~1 token per 3.5 characters for mixed content."""
-    return len(text) // 3
-
-
-# =====================================================
-# TRANSLATION — TranslateGemma structured format
-# =====================================================
-def translate_text_batch(texts, target_language="English"):
+def translate_text_batch(texts, target_language="English", source_language="English"):
     target_code = get_lang_code(target_language)
-    log(f"Target language: {target_language} → ISO code: {target_code}")
+    source_code = get_lang_code(source_language)
+    log(f"Translation: {source_language} ({source_code}) → {target_language} ({target_code})")
 
-    prompts = []
-    valid_indices = []
+    # Validate target language token
+    try:
+        forced_bos_token_id = tokenizer.convert_tokens_to_ids(target_code)
+        if forced_bos_token_id == tokenizer.unk_token_id:
+            log(f"ERROR: Unknown target language code '{target_code}'")
+            return texts
+    except Exception as e:
+        log(f"ERROR: Failed to get token ID for '{target_code}': {e}")
+        return texts
+
+    # Set source language on tokenizer
+    tokenizer.src_lang = source_code
+
+    device = next(model.parameters()).device
     results = [""] * len(texts)
+
+    # Collect all segments across all pages
+    all_segments = []       # (page_index, segment_text)
+    passthrough_pages = set()
 
     for idx, text in enumerate(texts):
         stripped = (text or "").strip()
         if not stripped or len(re.findall(r"[^\W\d_]", stripped, re.UNICODE)) < 5:
             results[idx] = text or ""
+            passthrough_pages.add(idx)
             continue
 
-        messages = build_translation_messages(stripped, target_code)
-        prompt = build_prompt(messages)
+        segments = _split_into_segments(stripped)
+        for seg in segments:
+            all_segments.append((idx, seg))
 
-        # Safety check: if a single page exceeds context, split it
-        if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
-            words = stripped.split()
-            mid = len(words) // 2
-            for half in [" ".join(words[:mid]), " ".join(words[mid:])]:
-                half_msgs = build_translation_messages(half, target_code)
-                prompts.append(build_prompt(half_msgs))
-                valid_indices.append(idx)  # both halves map to same index
-        else:
-            prompts.append(prompt)
-            valid_indices.append(idx)
-
-    if not prompts:
+    if not all_segments:
         return results
 
-    log(f"Translating {len(prompts)} pages in parallel with vLLM...")
+    log(f"Translating {len(all_segments)} segments from {len(texts)} pages "
+        f"(batch_size={BATCH_SIZE})...")
 
-    sampling_params = SamplingParams(
-        temperature=0,
-        max_tokens=4096,
-    )
-
+    translated_segments = [""] * len(all_segments)
+    total_tokens = 0
     t0 = time.time()
-    outputs = llm_engine.generate(prompts, sampling_params)
+
+    for batch_start in range(0, len(all_segments), BATCH_SIZE):
+        batch_items = all_segments[batch_start:batch_start + BATCH_SIZE]
+        batch_texts = [item[1] for item in batch_items]
+
+        # Tokenize
+        inputs = tokenizer(
+            batch_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=MAX_LENGTH,
+        ).to(device)
+
+        # Generate translations
+        with torch.no_grad():
+            output_tokens = model.generate(
+                **inputs,
+                forced_bos_token_id=forced_bos_token_id,
+                max_new_tokens=MAX_LENGTH,
+            )
+
+        total_tokens += output_tokens.numel()
+
+        # Decode
+        decoded = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
+        for i, text in enumerate(decoded):
+            translated_segments[batch_start + i] = text.strip()
+
     gen_time = time.time() - t0
-
-    total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
     log(f"Translation: {total_tokens} tokens in {gen_time:.1f}s "
-        f"({total_tokens/gen_time:.1f} tok/s effective)")
+        f"({total_tokens / max(gen_time, 0.001):.0f} tok/s)")
 
-    for i, output in enumerate(outputs):
-        translated = clean_output(output.outputs[0].text)
-        idx = valid_indices[i]
-        if results[idx]:
-            results[idx] += "\n" + translated  # Concatenate split-page halves
-        else:
-            results[idx] = translated
+    # Reassemble pages from translated segments
+    page_segments = {}
+    for seg_idx, (page_idx, _) in enumerate(all_segments):
+        if page_idx not in page_segments:
+            page_segments[page_idx] = []
+        page_segments[page_idx].append(translated_segments[seg_idx])
+
+    for page_idx, segs in page_segments.items():
+        results[page_idx] = "\n\n".join(segs)
 
     return results
-
-
-# =====================================================
-# SUMMARY — chunked to fit context window
-# =====================================================
-
-def _build_summary_prompt(text_block, target_words, system_prompt):
-    """Build a summary prompt from a text block and return the formatted string."""
-    user_content = (
-        f"{system_prompt}\n\n"
-        f"Summarize the following document in approximately {target_words} words. "
-        f"Make sure to complete all sentences properly.\n\n"
-        f"DOCUMENT:\n{text_block}"
-    )
-    # TranslateGemma uses user/model roles (no system role)
-    messages = [
-        {"role": "user", "content": user_content}
-    ]
-    return build_prompt(messages)
-
-def _chunk_pages_by_tokens(cleaned_pages, max_tokens):
-    """Split cleaned page texts into chunks that fit within max_tokens."""
-    chunks = []
-    current_chunk = []
-    current_tokens = 0
-
-    for page_text in cleaned_pages:
-        page_tokens = _estimate_tokens(page_text)
-        # If a single page exceeds the limit, truncate it
-        if page_tokens > max_tokens:
-            if current_chunk:
-                chunks.append("\n\n".join(current_chunk))
-                current_chunk = []
-                current_tokens = 0
-            # Truncate to fit
-            char_limit = max_tokens * 3
-            chunks.append(page_text[:char_limit])
-            continue
-
-        if current_tokens + page_tokens > max_tokens and current_chunk:
-            chunks.append("\n\n".join(current_chunk))
-            current_chunk = []
-            current_tokens = 0
-
-        current_chunk.append(page_text)
-        current_tokens += page_tokens
-
-    if current_chunk:
-        chunks.append("\n\n".join(current_chunk))
-
-    return chunks
-
-def summarize_all_pages(pages, max_words, system_prompt):
-    # Collect all page texts
-    cleaned_pages = []
-    for p in pages:
-        text = (p["text"] or "").strip()
-        if text and len(re.findall(r"[^\W\d_]", text, re.UNICODE)) > 20:
-            cleaned_pages.append(text)
-
-    if not cleaned_pages:
-        log("ERROR: No valid text found for summary")
-        return ""
-
-    full_text = "\n\n".join(cleaned_pages)
-    doc_word_count = len(full_text.split())
-    actual_target = max(50, min(max_words, doc_word_count // 3))
-    log(f"Summary target: {actual_target} words (doc has {doc_word_count} words)")
-
-    # Check if the full text fits in one prompt
-    test_prompt = _build_summary_prompt(full_text, actual_target, system_prompt)
-    prompt_tokens = _estimate_tokens(test_prompt)
-
-    if prompt_tokens <= MAX_PROMPT_TOKENS:
-        # Single-shot: fits in context
-        log("Summary: single-shot (fits in context)")
-        sampling_params = SamplingParams(
-            temperature=0,
-            max_tokens=min(actual_target * 5, 4096),
-        )
-        t0 = time.time()
-        outputs = llm_engine.generate([test_prompt], sampling_params)
-        gen_time = time.time() - t0
-        decoded = clean_output(outputs[0].outputs[0].text)
-        result = limit_words(decoded, actual_target)
-        log(f"Summary: {len(result.split())} words in {gen_time:.1f}s")
-        return result
-
-    # Chunked summarization: split pages into token-safe groups
-    chunks = _chunk_pages_by_tokens(cleaned_pages, MAX_PROMPT_TOKENS)
-    log(f"Summary: document too large, splitting into {len(chunks)} chunks")
-
-    # Phase 1: Summarize each chunk
-    words_per_chunk = max(100, actual_target // len(chunks) + 50)
-    chunk_prompts = []
-    for i, chunk_text in enumerate(chunks):
-        chunk_prompts.append(
-            _build_summary_prompt(chunk_text, words_per_chunk, system_prompt)
-        )
-
-    sampling_params = SamplingParams(
-        temperature=0,
-        max_tokens=min(words_per_chunk * 5, 4096),
-    )
-
-    t0 = time.time()
-    chunk_outputs = llm_engine.generate(chunk_prompts, sampling_params)
-    phase1_time = time.time() - t0
-    log(f"Summary phase 1: {len(chunks)} chunks summarized in {phase1_time:.1f}s")
-
-    chunk_summaries = []
-    for output in chunk_outputs:
-        chunk_summaries.append(clean_output(output.outputs[0].text))
-
-    # Phase 2: Combine chunk summaries into final summary
-    combined = "\n\n".join(
-        f"[Part {i+1}]: {s}" for i, s in enumerate(chunk_summaries)
-    )
-
-    combine_user = (
-        f"{system_prompt}\n\n"
-        f"Below are summaries of different sections of a single document. "
-        f"Combine them into ONE coherent summary of approximately {actual_target} words. "
-        f"Make sure to complete all sentences properly. "
-        f"Do NOT list the parts separately — write a single unified paragraph.\n\n"
-        f"{combined}"
-    )
-    combine_messages = [
-        {"role": "user", "content": combine_user}
-    ]
-    combine_prompt = build_prompt(combine_messages)
-
-    sampling_params_final = SamplingParams(
-        temperature=0,
-        max_tokens=min(actual_target * 5, 4096),
-    )
-
-    t0 = time.time()
-    final_outputs = llm_engine.generate([combine_prompt], sampling_params_final)
-    phase2_time = time.time() - t0
-
-    decoded = clean_output(final_outputs[0].outputs[0].text)
-    result = limit_words(decoded, actual_target)
-
-    log(f"Summary: {len(result.split())} words in {phase1_time + phase2_time:.1f}s total "
-        f"(phase1={phase1_time:.1f}s, phase2={phase2_time:.1f}s)")
-    return result
 
 
 # =====================================================
@@ -446,33 +258,26 @@ def handler(event):
 
     input_data = event["input"]
     pages = input_data["pages"]
-    max_words = int(input_data.get("n_words", 500))
-    system_prompt = input_data.get("system_prompt", DEFAULT_SUMMARY_PROMPT)
     target_language = input_data.get("target_language", "English")
+    source_language = input_data.get("source_language", "English")
 
-    log(f"Processing {len(pages)} pages, target: {max_words} words, translate to: {target_language}")
+    log(f"Processing {len(pages)} pages, "
+        f"translate: {source_language} → {target_language}")
 
     load_model()
 
-    # 1) Translate all pages in parallel
+    # Translate all pages
     log(f"Starting batch translation to {target_language}...")
     start = time.time()
     page_texts = [p["text"] for p in pages]
-    translated_texts = translate_text_batch(page_texts, target_language)
+    translated_texts = translate_text_batch(
+        page_texts, target_language, source_language
+    )
     for i, p in enumerate(pages):
         p["text"] = translated_texts[i]
     log(f"Translation done in {time.time()-start:.2f}s")
 
-    # 2) Summarize
-    log(f"Creating summary ({max_words} words)")
-    start = time.time()
-    summary = summarize_all_pages(pages, max_words, system_prompt)
-    log(f"Summary done in {time.time()-start:.2f}s")
-
-    if not summary:
-        log("WARNING: Summary is empty!")
-
     log("Handler finished")
-    return {"summary": summary, "pages": pages}
+    return {"pages": pages}
 
 runpod.serverless.start({"handler": handler})
