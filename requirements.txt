@@ -1,0 +1,3 @@
+vllm
+huggingface_hub>=0.20.3
+runpod==1.6.2
