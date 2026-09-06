@@ -11,23 +11,15 @@ RUN pip uninstall -y torchvision torchaudio || true
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-# Download facebook/nllb-200-distilled-1.3B (CC-BY-NC-4.0, not gated)
-COPY <<'DOWNLOAD_SCRIPT' /tmp/download_model.py
-import sys
-try:
-    from huggingface_hub import snapshot_download
-    print("Starting download of facebook/nllb-200-distilled-1.3B...", flush=True)
-    snapshot_download(
-        repo_id="facebook/nllb-200-distilled-1.3B",
-        local_dir="/models/hf/nllb",
-        local_dir_use_symlinks=False,
-    )
-    print("Download complete!", flush=True)
-except Exception as e:
-    print(f"DOWNLOAD FAILED: {type(e).__name__}: {e}", flush=True)
-    sys.exit(1)
-DOWNLOAD_SCRIPT
-RUN python3 /tmp/download_model.py
+# Download google/translategemma-4b-it
+RUN python3 - <<EOF
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="google/translategemma-4b-it",
+    local_dir="/models/hf/translategemma",
+    local_dir_use_symlinks=False
+)
+EOF
 
 ENV HF_HOME=/models/hf
 ENV TRANSFORMERS_CACHE=/models/hf
