@@ -12,8 +12,8 @@ COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
 # HuggingFace token (required — translategemma is a gated model)
-ARG HF_TOKEN
-ENV HF_TOKEN=${HF_TOKEN}
+# ⚠️ Replace YOUR_HF_TOKEN_HERE with your actual token from https://huggingface.co/settings/tokens
+ENV HF_TOKEN="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"
 
 # Download google/translategemma-4b-it
 RUN python3 - <<EOF
