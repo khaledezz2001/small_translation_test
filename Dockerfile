@@ -11,12 +11,12 @@ RUN pip uninstall -y torchvision torchaudio || true
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-# Download google/translategemma-4b-it
+# Download facebook/nllb-200-distilled-1.3B (CC-BY-NC-4.0, not gated)
 RUN python3 - <<EOF
 from huggingface_hub import snapshot_download
 snapshot_download(
-    repo_id="google/translategemma-4b-it",
-    local_dir="/models/hf/translategemma",
+    repo_id="facebook/nllb-200-distilled-1.3B",
+    local_dir="/models/hf/nllb",
     local_dir_use_symlinks=False
 )
 EOF
