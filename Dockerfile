@@ -11,13 +11,19 @@ RUN pip uninstall -y torchvision torchaudio || true
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
+# HuggingFace token (required — translategemma is a gated model)
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
 # Download google/translategemma-4b-it
 RUN python3 - <<EOF
+import os
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="google/translategemma-4b-it",
     local_dir="/models/hf/translategemma",
-    local_dir_use_symlinks=False
+    local_dir_use_symlinks=False,
+    token=os.environ.get("HF_TOKEN")
 )
 EOF
 
